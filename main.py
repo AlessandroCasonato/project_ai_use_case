@@ -2,149 +2,149 @@ from transformers import pipeline
 import requests
 import re
 from datetime import datetime
-import dateparser
+from dateparser.search import search_dates
+import string
 
-API_KEY = "5ebfaae5335ce790b0cb60f2d1dfd0e9"  # Replace with your OpenWeatherMap API key
+# OpenWeatherMap key
+API_KEY = "5ebfaae5335ce790b0cb60f2d1dfd0e9"  
 
-# Load zero-shot classifier
+# Bart model for zero-shot classification
+# This model is used to classify user intents based on their input.
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
-# Labels for intent classification
-label_to_intent = {
-    "What's the current weather?": "get_current_weather",
-    "What's the temperature?": "get_temperature",
-    "Will it rain?": "get_rain_info",
-    "Is it windy?": "get_wind_info",
-    "What's the humidity?": "get_humidity",
-    "What will the weather be like later?": "get_forecast",
-    "What can you do?": "get_help"
-}
-labels = list(label_to_intent.keys())
+labels = [
+    "What's the weather like?",
+    "What's the temperature?",
+    "Will it rain?",
+    "Is it windy?",
+    "What's the humidity?",
+    "What can you do?"
+]
 
-# ----- Utility Functions ----- #
+label_to_intent = {
+    "What's the weather like?": "weather",
+    "What's the temperature?": "temperature",
+    "Will it rain?": "rain",
+    "Is it windy?": "wind",
+    "What's the humidity?": "humidity",
+    "What can you do?": "help"
+}
 
 def extract_city_and_date(user_input):
-    """Extracts the city and date (if any) from the user input."""
-    # Try to parse the date using the dateparser library
-    date = dateparser.parse(user_input, settings={'PREFER_DATES_FROM': 'future'})
-    
-    # Extract city using regex pattern for cities after 'in'
-    city_match = re.search(r"in ([A-ZÀ-Ùa-zà-ù\s]+)", user_input)
-    city = city_match.group(1).strip() if city_match else None
+    """Extract city and date from user input. If date is not specified, it will be considered as the current date."""
+    date = None
+    found_date_text = None
+
+    parsed = search_dates(user_input, settings={'PREFER_DATES_FROM': 'future'})
+    if parsed:
+        found_date_text, date = parsed[0]
+        cleaned_input = user_input.replace(found_date_text, "")
+    else:
+        cleaned_input = user_input
+
+    city_match = re.search(r"\b(?:in|at)\s+([A-ZÀ-Ùa-zà-ù\s]+)", cleaned_input)
+    if city_match:
+        city = city_match.group(1).strip()
+    else:
+        words = cleaned_input.split()
+        stopwords = {"what", "is", "the", "weather", "like", "will", "it", "be", "going", "to", "rain", "tomorrow", "humidity", "temperature", "forecast", "in", "at", "on", "and", "of", "for"}
+        candidates = [w for w in words if w.lower() not in stopwords]
+        city = candidates[-1] if candidates else None
+
+    if city:
+        city = city.strip(string.punctuation)
+
     return city, date
 
-def classify_intent(user_input):
-    """Returns the matched intent from user input."""
-    result = classifier(user_input, labels)
-    top_label = result['labels'][0]
-    score = result['scores'][0]
-    print(f"Intent Match: {top_label} ({score:.2f})")
-    return label_to_intent[top_label] if score > 0.5 else None
 
-def get_weather(city):
-    """Gets current weather for a given city."""
+def classify_intent(text: str):
+    result = classifier(text, labels)
+    best = result['labels'][0]; score = result['scores'][0]
+    return label_to_intent[best] if score > 0.3 else None
+
+def get_current(city):
+    """API call that returns weather data based on current date and time."""
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
-    res = requests.get(url)
-    data = res.json()
+    data = requests.get(url).json()
     return data if data.get("cod") == 200 else None
 
 def get_forecast(city):
-    """Gets 5-day weather forecast for a given city."""
+    """API call that returns weather data based on current date and time."""
     url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={API_KEY}&units=metric"
-    res = requests.get(url)
-    data = res.json()
-    print(data)
+    print(url)
+    data = requests.get(url).json()
     return data if data.get("cod") == "200" else None
 
-def generate_response(intent, city=None, date=None, weather_data=None, forecast_data=None):
-    if intent == "get_help":
+def build_response(intent, city, date, current, forecast):
+    if intent == "help":
         return (
-            "I can help you with weather information! Try asking:\n"
+            "I can give you weather info! Try:\n"
             "- What's the weather like in Paris?\n"
             "- Will it rain in Rome tomorrow?\n"
-            "- What's the temperature in Berlin?\n"
-            "- How windy is it in Madrid?\n"
-            "- What's the humidity in Tokyo?\n"
-            "- What can you do?\n"
+            "- What's the humidity in Milan next Monday?\n"
         )
-    print(date)
-
-    if intent == "get_forecast":
-        # If no date is provided, fallback to current weather
-        if not date:
-            intent = "get_current_weather"
-            weather_data = get_weather(city)
-
-        else:
-            if not forecast_data:
-                return f"Sorry, I couldn't get forecast data for {city}."
-
-            response = f"Here's the forecast for {city} on {date.strftime('%A, %B %d')}:\n"
-            found = False
-
-            for entry in forecast_data["list"]:
-                dt = datetime.strptime(entry["dt_txt"], "%Y-%m-%d %H:%M:%S")
-                if dt.date() == date.date():
-                    temp = entry["main"]["temp"]
-                    desc = entry["weather"][0]["description"]
-                    response += f"- {dt.strftime('%H:%M')}: {desc}, {temp}°C\n"
-                    found = True
-
-            return response if found else f"Sorry, I couldn't find forecast data for {city} on that date."
-
-    if not weather_data:
+    # Choose data source
+    use_forecast = date is not None
+    if use_forecast and not forecast:
+        return f"Sorry, I couldn't get forecast data for {city}."
+    if not use_forecast and not current:
         return f"Sorry, I couldn't find weather info for '{city}'."
 
-    desc = weather_data["weather"][0]["description"]
-    temp = weather_data["main"]["temp"]
-    humidity = weather_data["main"]["humidity"]
-    wind = weather_data["wind"]["speed"]
+    # ---------- From forecast ---------- #
+    if use_forecast:
+        # pick the first slot of the requested day
+        slot = next((e for e in forecast["list"]
+                     if datetime.strptime(e["dt_txt"], "%Y-%m-%d %H:%M:%S").date() == date.date()), None)
+        if not slot:
+            return f"Sorry, no forecast data for {city} on that date."
+        main = slot["main"]; weather_desc = slot["weather"][0]["description"]; wind = slot["wind"]["speed"]
+        if intent == "weather":
+            return f"Forecast for {city} on {date.strftime('%A, %B %d')}: {weather_desc}, {main['temp']}°C."
+        if intent == "temperature":
+            return f"The forecasted temperature in {city} on {date.strftime('%A, %B %d')} is {main['temp']}°C."
+        if intent == "rain":
+            return ("Yes, rain is expected." if "rain" in weather_desc.lower()
+                    else "No rain is expected.") + f" ({weather_desc})"
+        if intent == "wind":
+            return f"The forecasted wind speed in {city} on {date.strftime('%A, %B %d')} is {wind} m/s."
+        if intent == "humidity":
+            return f"The forecasted humidity in {city} on {date.strftime('%A, %B %d')} is {main['humidity']}%."
 
-    if intent == "get_current_weather":
-        return f"In {city}, it's currently {desc} with a temperature of {temp}°C."
-    elif intent == "get_temperature":
+    # ---------- From current ---------- #
+    weather_desc = current["weather"][0]["description"]; temp = current["main"]["temp"]
+    humidity = current["main"]["humidity"]; wind = current["wind"]["speed"]
+
+    if intent == "weather":
+        return f"In {city} it's currently {weather_desc} with {temp}°C."
+    if intent == "temperature":
         return f"The temperature in {city} is {temp}°C."
-    elif intent == "get_rain_info":
-        if "rain" in desc.lower():
-            return f"Yes, rain is expected in {city}: {desc}."
-        return f"No rain is expected in {city} right now: {desc}."
-    elif intent == "get_wind_info":
-        return f"The wind speed in {city} is {wind} m/s."
-    elif intent == "get_humidity":
+    if intent == "rain":
+        return ("Yes, it's raining." if "rain" in weather_desc.lower()
+                else "No rain right now.") + f" ({weather_desc})"
+    if intent == "wind":
+        return f"The wind speed in {city} is {wind} m/s."
+    if intent == "humidity":
         return f"The humidity in {city} is {humidity}%."
-    else:
-        return "I'm not sure how to help with that."
+    return "I'm not sure how to help with that."
 
-# ----- Main Chat Function ----- #
-
+# ---------- Chat loop ---------- #
 def chatbot(user_input):
     intent = classify_intent(user_input)
-
-    if intent == "get_help":
-        return generate_response(intent)
-
+    if not intent:
+        return "I'm not sure how to help with that."
     city, date = extract_city_and_date(user_input)
-
     if not city:
         return "Please include a city in your question (e.g., 'What's the weather like in London?')."
 
-    print(f"City: {city} | Date: {date} | Intent: {intent}")
-
-    if intent == "get_forecast" and date:
-        forecast_data = get_forecast(city)
-        return generate_response(intent, city=city, date=date, forecast_data=forecast_data)
-    else:
-        weather_data = get_weather(city)
-        return generate_response(intent, city=city, weather_data=weather_data)
-
-# ----- Run Chat Loop ----- #
+    current = get_current(city) if date is None else None
+    forecast = get_forecast(city) if date is not None else None
+    return build_response(intent, city, date, current, forecast)
 
 if __name__ == "__main__":
     print("🌦️  Weather Chatbot — type 'exit' to quit.")
     while True:
         user_input = input("You: ")
-        if user_input.lower() in ["exit", "quit"]:
+        if user_input.lower() in ("exit", "quit"):
             print("Bot: Goodbye!")
             break
-        response = chatbot(user_input)
-        print("Bot:", response)
+        print("Bot:", chatbot(user_input))

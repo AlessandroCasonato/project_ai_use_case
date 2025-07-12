@@ -1,8 +1,8 @@
-networkx
-dateparser
-sentencepiece
-dateparser
 transformers
+requests
+datetime
+dateparser
+normalizer
+tqdm
+huggingface_hub
 torch
-sentencepiece
-spacy
