@@ -6,3 +6,5 @@ normalizer
 tqdm
 huggingface_hub
 torch
+pytest 
+requests-mock
